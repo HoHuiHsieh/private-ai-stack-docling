@@ -1,5 +1,7 @@
 # docling
 
+> This directory is a sub-project of [`private-ai-stack`](../..).
+
 Document conversion (PDF, DOCX, PPTX, XLSX, HTML, images to Markdown) through Docling Serve, exposed as an MCP server.
 
 ## Containers
