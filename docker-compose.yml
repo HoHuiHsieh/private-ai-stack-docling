@@ -1,0 +1,48 @@
+# Prod services for docling. Started by: ./start.sh prod docling
+# Docling Serve: document conversion API (PDF/DOCX/etc. to Markdown/JSON). Internal only (no ports).
+# Reachable from other containers at http://docling:5001 on the backend network.
+name: private-ai-stack-docling
+
+services:
+  docling:
+    image: ghcr.io/docling-project/docling-serve-cu130:main
+    env_file:
+      - ../../.env                 # shared settings (SSL_CERT_FILE, hostnames)
+      - ./env/.env.docling         # service settings
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ../../certs:/certs:ro      # SSL_CERT_FILE in .env points here
+    restart: unless-stopped
+    networks: [backend]
+
+  # Docling MCP server (mcp/). Routed from nginx's app vhost at /api/mcp/docling. Internal only.
+  docling-mcp:
+    build:
+      context: ./mcp
+      target: runner
+    env_file:
+      - ../../.env
+      - ./env/.env.docling-mcp
+    volumes:
+      - ../../certs:/certs:ro   # stack CA, for HTTPS calls
+    depends_on:
+      docling:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks: [backend]
+
+networks:
+  backend:
+    external: true
+    name: private-ai-stack_backend   # root stack network; start the root stack first

@@ -1,0 +1,13 @@
+# Dev overrides for docling. Started by: ./start.sh dev docling
+# The docling image has no dev build, so only docling-mcp changes: dev target with hot reload
+# (tsx watch) and the source bind-mounted.
+services:
+  docling-mcp:
+    build:
+      target: dev
+    volumes:
+      - ./mcp:/app
+      - docling_mcp_node_modules:/app/node_modules
+
+volumes:
+  docling_mcp_node_modules:
