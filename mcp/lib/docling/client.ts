@@ -14,6 +14,8 @@ export type ConversionOptions = {
   doOcr?: boolean;
   pageRange?: [number, number];
   tableMode?: "fast" | "accurate";
+  /** Return pictures inline as base64 data URIs so they can be extracted and uploaded. */
+  embedImages?: boolean;
 };
 
 export type DocumentResult = {
@@ -41,9 +43,15 @@ function settings(): { baseUrl: string; timeoutMs: number } {
   };
 }
 
-/** Options sent to docling-serve: Markdown output only, images referenced rather than embedded. */
+/**
+ * Options sent to docling-serve: Markdown output only. Images are referenced by default; with
+ * embedImages they are embedded as base64 data URIs so the MCP can extract and upload them.
+ */
 function buildOptions(o: ConversionOptions): Record<string, unknown> {
-  const options: Record<string, unknown> = { to_formats: ["md"], image_export_mode: "referenced" };
+  const options: Record<string, unknown> = {
+    to_formats: ["md"],
+    image_export_mode: o.embedImages ? "embedded" : "referenced",
+  };
   if (o.doOcr !== undefined) options.do_ocr = o.doOcr;
   if (o.pageRange) options.page_range = o.pageRange;
   if (o.tableMode) options.table_mode = o.tableMode;

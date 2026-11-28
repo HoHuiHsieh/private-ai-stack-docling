@@ -20,8 +20,12 @@ Also available in the Docling Serve UI at `DOCLING_HOST`, when `DOCLING_SERVE_EN
 - **Env files** (`env/`, created from the `.example` files, never committed):
   - `.env.docling`: Docling Serve settings (`DOCLING_SERVE_ENABLE_UI`, and other tuning).
   - `.env.docling-mcp`: `MCP_JWKS_URL`, `MCP_JWT_ISSUER`, `MCP_JWT_AUDIENCE`, `OIDC_ISSUER`, `APP_PUBLIC_URL`,
-    `DOCLING_API_URL` (`http://docling:5001`), `DOCLING_TIMEOUT_SECONDS`, `LINE_SERVICE_URL`, `INTERNAL_API_TOKEN`
-    (must match the line service; used to send chat events).
+    `DOCLING_API_URL` (`http://docling:5001`), `DOCLING_TIMEOUT_SECONDS`, `INTERNAL_API_TOKEN`
+    (must match the line service; used to send chat events),
+    `OPEN_WEBUI_URL` (Open WebUI image uploads), `OPEN_TERMINAL_URL` and `OPEN_TERMINAL_API_KEY` (Open Terminal image uploads).
+- **Secrets** (files, not env values, mounted by Compose at `/run/secrets/`):
+  - `secrets/open_webui_api_key`: the Open WebUI API key for image uploads. Create it with the key only, one line,
+    and `chmod 600`. The directory is gitignored. `docling-mcp` will not start without this file.
 - **`models.json`**: none. Docling does not use models in this stack.
 
 ## Secrets
@@ -37,10 +41,22 @@ Endpoint: `POST /api/mcp/docling` (Keycloak bearer token).
 | `convert_document_url` | `url` (required), `max_chars` (optional, 1000-500000, default 50000) | Converts a document to Markdown and waits for the result. Use for small to medium documents |
 | `start_document_conversion` | `url` (required) | Starts an asynchronous conversion and returns `task_id` at once |
 | `get_conversion_status` | `task_id` (required), `wait` (optional, seconds 0-60, default 0) | Returns `task_status`: pending, started, success, partial_success, failure or skipped |
-| `get_conversion_result` | `task_id` (required), `max_chars` (optional) | Returns the Markdown of a completed task. Call only after success or partial_success |
+| `get_conversion_result` | `task_id` (required), `open_terminal_path`, `max_chars` (optional) | Returns the Markdown of a completed task. Call only after success or partial_success |
 
 Large documents: `start_document_conversion`, then `get_conversion_status` until success or partial_success, then `get_conversion_result`.
-Images are referenced, not embedded.
+
+### Image extraction
+
+Set `extract_images: true` on `convert_document_url` or `start_document_conversion` to pull the pictures out of the document. Each picture is uploaded and the Markdown refers to it by file name. The response lists each one under `images` with its `destination`, `location` (Open Terminal path or Open WebUI file id), `size`, and an `error` when that upload failed. Without the flag, images stay referenced as before.
+
+Where the pictures go depends on the tool input `open_terminal_path`:
+
+| Input | Destination | Endpoint | Needs |
+|---|---|---|---|
+| `open_terminal_path` given | Open Terminal, in the caller's workspace | `POST {OPEN_TERMINAL_URL}/files/upload?directory=<open_terminal_path>` | `OPEN_TERMINAL_URL`, `OPEN_TERMINAL_API_KEY`, and the caller's Open WebUI user id (`X-OpenWebUI-User-Id`, so `open-webui` must forward user headers via `ENABLE_FORWARD_USER_INFO_HEADERS`) |
+| omitted | Open WebUI file store | `POST {OPEN_WEBUI_URL}/api/v1/files/` | `OPEN_WEBUI_URL` and the `secrets/open_webui_api_key` file |
+
+For async tasks, pass `extract_images` to `start_document_conversion` and `open_terminal_path` to `get_conversion_result`. Limits: 50 pictures and 10 MB each. Pictures beyond the limits are left out and counted in `images_skipped`.
 
 ## Verify
 
