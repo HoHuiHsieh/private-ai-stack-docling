@@ -1,18 +1,15 @@
 import type { ExtractedImage } from "../docling/images";
-import { readSecretFile, requireEnv, UploadError, UPLOAD_TIMEOUT_MS } from "./common";
+import { requireEnv, UploadError, UPLOAD_TIMEOUT_MS } from "./common";
 
 /**
  * Upload an image to Open WebUI's file store (POST /api/v1/files/). Returns the file id.
- * Files are owned by the API key's user, not the caller.
+ * The file belongs to the owner of apiKey, which is the caller's stored Open WebUI key.
  *
  * Env (names only, set in env/.env.docling-mcp):
- *   OPEN_WEBUI_URL            internal base URL, e.g. http://open-webui:8080 (backend network)
- *   OPEN_WEBUI_API_KEY_FILE   path to the API key secret, default /run/secrets/open_webui_api_key
- *                             (the Compose secret, not an env value)
+ *   OPEN_WEBUI_URL   internal base URL, e.g. http://open-webui:8080 (backend network)
  */
-export async function uploadToOpenWebUI(image: ExtractedImage): Promise<string> {
+export async function uploadToOpenWebUI(image: ExtractedImage, apiKey: string): Promise<string> {
   const base = requireEnv("OPEN_WEBUI_URL");
-  const key = await readSecretFile("OPEN_WEBUI_API_KEY_FILE", "/run/secrets/open_webui_api_key", "Open WebUI API key");
 
   const buffer = new ArrayBuffer(image.bytes.length);
   new Uint8Array(buffer).set(image.bytes);
@@ -23,7 +20,7 @@ export async function uploadToOpenWebUI(image: ExtractedImage): Promise<string> 
   try {
     res = await fetch(`${base}/api/v1/files/`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
       body: form,
       cache: "no-store",
       signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),

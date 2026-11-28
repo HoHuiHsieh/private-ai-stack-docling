@@ -31,8 +31,6 @@ services:
       - ./env/.env.docling-mcp
     volumes:
       - ../../certs:/certs:ro   # stack CA, for HTTPS calls
-    secrets:
-      - open_webui_api_key      # mounted at /run/secrets/open_webui_api_key (not an env var)
     depends_on:
       docling:
         condition: service_started
@@ -48,9 +46,3 @@ networks:
   backend:
     external: true
     name: private-ai-stack_backend   # root stack network; start the root stack first
-
-# Secrets are files, not env values. Create the file before starting docling-mcp (Compose fails
-# without it). It is gitignored: services/docling/secrets/.
-secrets:
-  open_webui_api_key:
-    file: ./secrets/open_webui_api_key

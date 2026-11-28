@@ -1,4 +1,4 @@
-import type { McpServerDef, McpTool } from "../server";
+import type { McpContext, McpServerDef, McpTool } from "../server";
 import { openWebUIEvents } from "../openwebui";
 import {
   convertUrl,
@@ -13,6 +13,9 @@ import { extractImages, hasEmbeddedImages, imageBaseName, type ExtractedImage } 
 import { uploadToOpenTerminal } from "../../upload/open-terminal";
 import { uploadToOpenWebUI } from "../../upload/open-webui";
 import { UploadError } from "../../upload/common";
+import { getOpenWebUIKey, getOpenWebUIKeyMeta, setOpenWebUIKey } from "../../openwebui/key";
+import { ownerOf } from "../owner";
+import { elicitForm } from "../ui";
 
 /**
  * Document conversion via Docling Serve (PDF, DOCX, PPTX, XLSX, HTML, images to Markdown).
@@ -137,19 +140,29 @@ function baseNameOf(doc: DocumentResult): string {
   return imageBaseName(doc.filename);
 }
 
+/**
+ * The caller: `sub` owns the stored Open WebUI key; `openWebUIUserId` (forwarded by open-webui)
+ * selects the Open Terminal workspace.
+ */
+type Caller = { sub: string; openWebUIUserId?: string };
+
+function callerOf(ctx: McpContext): Caller {
+  return { sub: ownerOf(ctx), openWebUIUserId: ctx.headers.get("x-openwebui-user-id") ?? undefined };
+}
+
 /** Pull pictures out of the Markdown and upload them. Upload failures are reported per image. */
-async function publishImages(
-  doc: DocumentResult,
-  terminalPath: string | undefined,
-  openWebUIUser: string | undefined,
-): Promise<Published> {
+async function publishImages(doc: DocumentResult, terminalPath: string | undefined, caller: Caller): Promise<Published> {
   if (!hasEmbeddedImages(doc.markdown)) return { markdown: doc.markdown, images: [], skipped: 0 };
 
   const extraction = extractImages(doc.markdown, baseNameOf(doc));
   const images: PublishedImage[] = [];
 
+  // The Open WebUI key is read only when an Open WebUI upload is needed.
+  const openWebUIKey =
+    !terminalPath && extraction.images.length > 0 ? await getOpenWebUIKey(caller.sub) : null;
+
   for (const image of extraction.images) {
-    images.push(await uploadOne(image, terminalPath, openWebUIUser));
+    images.push(await uploadOne(image, terminalPath, caller, openWebUIKey));
   }
   return { markdown: extraction.markdown, images, skipped: extraction.skipped };
 }
@@ -157,20 +170,27 @@ async function publishImages(
 async function uploadOne(
   image: ExtractedImage,
   terminalPath: string | undefined,
-  openWebUIUser: string | undefined,
+  caller: Caller,
+  openWebUIKey: string | null,
 ): Promise<PublishedImage> {
   const destination = terminalPath ? "open_terminal" : "open_webui";
   const base = { name: image.name, destination, size: image.bytes.length } as const;
   try {
     if (terminalPath) {
-      if (!openWebUIUser) {
+      if (!caller.openWebUIUserId) {
         throw new UploadError(
           "Open Terminal upload needs the Open WebUI user id. Set ENABLE_FORWARD_USER_INFO_HEADERS on open-webui.",
         );
       }
-      return { ...base, location: await uploadToOpenTerminal(image, { directory: terminalPath, userId: openWebUIUser }) };
+      return {
+        ...base,
+        location: await uploadToOpenTerminal(image, { directory: terminalPath, userId: caller.openWebUIUserId }),
+      };
     }
-    return { ...base, location: await uploadToOpenWebUI(image) };
+    if (!openWebUIKey) {
+      throw new UploadError("No Open WebUI API key is stored for you. Run docling_set_open_webui_key first.");
+    }
+    return { ...base, location: await uploadToOpenWebUI(image, openWebUIKey) };
   } catch (err) {
     console.error(`image upload to ${destination} failed:`, err instanceof Error ? err.message : "unknown error");
     return { ...base, error: err instanceof UploadError ? err.message : "Upload failed." };
@@ -226,7 +246,7 @@ const convertTool: McpTool = {
     try {
       const doc = await convertUrl(url, options);
       if (hasEmbeddedImages(doc.markdown)) await ui.status("Uploading extracted images...");
-      const published = await publishImages(doc, terminalPath, ctx.headers.get("x-openwebui-user-id") ?? undefined);
+      const published = await publishImages(doc, terminalPath, callerOf(ctx));
       await ui.status("Document converted", true);
       return shapeResult(doc, maxChars, published);
     } catch (err) {
@@ -314,13 +334,57 @@ const resultTool: McpTool = {
     const terminalPath = parseTerminalPath(args.open_terminal_path);
     const maxChars = parseMaxChars(args.max_chars);
     const doc = await getTaskResult(taskId);
-    const published = await publishImages(doc, terminalPath, ctx.headers.get("x-openwebui-user-id") ?? undefined);
+    const published = await publishImages(doc, terminalPath, callerOf(ctx));
     return shapeResult(doc, maxChars, published);
+  },
+};
+
+const setKeyTool: McpTool = {
+  name: "docling_set_open_webui_key",
+  description:
+    "Open a secure form for the user to enter their Open WebUI API key (Settings > Account > API Keys). " +
+    "It is encrypted and stored; the value is never shown back to the model. Required to upload extracted " +
+    "images to the Open WebUI file store.",
+  inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  handler: async (_args, ctx) => {
+    const sub = ownerOf(ctx);
+    const outcome = await elicitForm(
+      ctx,
+      "Enter your Open WebUI API key. It is encrypted and stored; the value is not shown back.",
+      {
+        type: "object",
+        properties: { apiKey: { type: "string", title: "Open WebUI API key", format: "password" } },
+        required: ["apiKey"],
+      },
+    );
+    if (outcome.action === "unsupported") {
+      return "This client cannot show the secure form. Use a client that supports elicitation (Open WebUI) to set the key.";
+    }
+    if (outcome.action !== "accept") return "Open WebUI key update cancelled. Nothing was stored.";
+
+    const apiKey = outcome.content.apiKey;
+    if (typeof apiKey !== "string" || apiKey.trim() === "" || apiKey.length > 4096) {
+      throw new Error("The Open WebUI API key is required and must be at most 4096 characters");
+    }
+    await setOpenWebUIKey(sub, apiKey.trim());
+    return "The Open WebUI API key was stored. The value was not shown.";
+  },
+};
+
+const checkKeyTool: McpTool = {
+  name: "docling_check_open_webui_key",
+  description:
+    "Report whether an Open WebUI API key is stored for the user, and when it was last changed. Never returns the key.",
+  inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  handler: async (_args, ctx) => {
+    const meta = await getOpenWebUIKeyMeta(ownerOf(ctx));
+    if (!meta) return JSON.stringify({ configured: false }, null, 2);
+    return JSON.stringify({ configured: true, updatedAt: meta.updatedAt }, null, 2);
   },
 };
 
 export const doclingServer: McpServerDef = {
   name: "docling",
-  version: "0.2.0",
-  tools: [convertTool, startTool, statusTool, resultTool],
+  version: "0.3.0",
+  tools: [convertTool, startTool, statusTool, resultTool, setKeyTool, checkKeyTool],
 };
